@@ -1,0 +1,61 @@
+name: Build Windows installers
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Extract source archive
+        shell: pwsh
+        run: Expand-Archive -LiteralPath nuendo-conform-helper-v1-source.zip -DestinationPath project -Force
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: project/package-lock.json
+
+      - name: Set up Rust MSVC
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: project/src-tauri -> target
+
+      - name: Install frontend dependencies
+        working-directory: project
+        run: npm ci
+
+      - name: Check frontend build
+        working-directory: project
+        run: npm run build
+
+      - name: Build Tauri Windows installers
+        working-directory: project
+        run: npm run tauri build -- --target x86_64-pc-windows-msvc
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuendo-conform-helper-windows-x64
+          if-no-files-found: error
+          path: |
+            project/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+            project/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
