@@ -1,0 +1,20 @@
+use std::process::Command;
+fn split_shortcut(shortcut:&str)->(Vec<String>,String){let mut p:Vec<String>=shortcut.split('+').map(|s|s.trim().to_lowercase()).filter(|s|!s.is_empty()).collect();let k=p.pop().unwrap_or_default();(p,k)}
+#[cfg(target_os="macos")]
+fn mac_send(shortcut:&str,target_app:&str)->Result<(),String>{let(mods,key)=split_shortcut(shortcut);let mut am:Vec<&str>=vec![];for m in mods{match m.as_str(){"cmd"|"command"|"meta"=>am.push("command down"),"ctrl"|"control"=>am.push("control down"),"alt"|"option"=>am.push("option down"),"shift"=>am.push("shift down"),_=>{}}}let using=if am.is_empty(){String::new()}else{format!(" using {{{}}}",am.join(", "))};let stmt=match key.as_str(){"enter"|"return"=>format!("key code 36{}",using),"backspace"|"delete"=>format!("key code 51{}",using),"space"=>format!("key code 49{}",using),"tab"=>format!("key code 48{}",using),"left"=>format!("key code 123{}",using),"right"=>format!("key code 124{}",using),"down"=>format!("key code 125{}",using),"up"=>format!("key code 126{}",using),k if k.len()==1=>format!("keystroke \\\"{}\\\"{}",k,using),_=>return Err(format!("macOS V1 尚未支援按鍵：{}",key))};let script=format!("tell application \\\"{}\\\" to activate\\ndelay 0.12\\ntell application \\\"System Events\\\"\\n{}\\nend tell",target_app.replace('"',"\\\\\\\""),stmt);let out=Command::new("osascript").arg("-e").arg(script).output().map_err(|e|e.to_string())?;if out.status.success(){Ok(())}else{Err(String::from_utf8_lossy(&out.stderr).to_string())}}
+#[cfg(target_os="windows")]
+fn win_send(shortcut:&str,target_process:&str)->Result<(),String>{let(mods,key)=split_shortcut(shortcut);let mut prefix=String::new();for m in mods{match m.as_str(){"ctrl"|"control"=>prefix.push('^'),"alt"|"option"=>prefix.push('%'),"shift"=>prefix.push('+'),_=>{}}}let send_key=match key.as_str(){"enter"|"return"=>"{ENTER}".into(),"backspace"=>"{BACKSPACE}".into(),"delete"=>"{DELETE}".into(),"space"=>" ".into(),"tab"=>"{TAB}".into(),"left"=>"{LEFT}".into(),"right"=>"{RIGHT}".into(),"up"=>"{UP}".into(),"down"=>"{DOWN}".into(),k if k.len()==1=>k.into(),k if k.starts_with('f')&&k[1..].parse::<u8>().is_ok()=>format!("{{{}}}",k.to_uppercase()),_=>return Err(format!("Windows V1 尚未支援按鍵：{}",key))};let keys=format!("{}{}",prefix,send_key);let process=target_process.replace('\'',"''");let keys_ps=keys.replace('\'',"''");let script=format!(r#"Add-Type -AssemblyName System.Windows.Forms
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class NativeWin {{ [DllImport("user32.dll")][return: MarshalAs(UnmanagedType.Bool)] public static extern bool SetForegroundWindow(IntPtr hWnd); }}
+"@
+$p=Get-Process|Where-Object {{ $_.ProcessName -like '{process}*' }}|Select-Object -First 1
+if($null -eq $p){{throw '找不到 Nuendo process：{process}'}}
+[NativeWin]::SetForegroundWindow($p.MainWindowHandle)|Out-Null
+Start-Sleep -Milliseconds 150
+[System.Windows.Forms.SendKeys]::SendWait('{keys_ps}')"#);let out=Command::new("powershell").args(["-NoProfile","-NonInteractive","-Command",&script]).output().map_err(|e|e.to_string())?;if out.status.success(){Ok(())}else{Err(String::from_utf8_lossy(&out.stderr).to_string())}}
+#[tauri::command]
+fn send_shortcut(shortcut:String,target_app_mac:String,target_process_windows:String)->Result<(),String>{if shortcut.trim().is_empty(){return Err("快捷鍵尚未設定".into())}#[cfg(target_os="macos")]{return mac_send(&shortcut,&target_app_mac)}#[cfg(target_os="windows")]{return win_send(&shortcut,&target_process_windows)}#[allow(unreachable_code)]Err("目前只支援 macOS / Windows".into())}
+#[cfg_attr(mobile,tauri::mobile_entry_point)]
+pub fn run(){tauri::Builder::default().plugin(tauri_plugin_clipboard_manager::init()).plugin(tauri_plugin_dialog::init()).plugin(tauri_plugin_fs::init()).plugin(tauri_plugin_global_shortcut::Builder::new().build()).invoke_handler(tauri::generate_handler![send_shortcut]).run(tauri::generate_context!()).expect("error while running Nuendo Conform Helper")}

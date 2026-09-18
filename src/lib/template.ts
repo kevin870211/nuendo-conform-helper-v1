@@ -1,0 +1,3 @@
+import type { ConformItem } from "./types";
+export function rangeText(inTc?:string,outTc?:string){return inTc&&outTc?`${inTc}~${outTc}`:""}
+export function applyNameTemplate(template:string,item:ConformItem){const vars:Record<string,string>={source_version:item.sourceVersion?.replace(/\s+/g,"_")??"",source_in:item.source?.in??"",source_out:item.source?.out??"",source_range:rangeText(item.source?.in,item.source?.out),new_in:item.destination?.in??item.pointTc??"",new_out:item.destination?.out??"",new_range:rangeText(item.destination?.in,item.destination?.out),note:item.note??"",type:item.type};return template.replace(/\{([a-z_]+)\}/g,(_,key)=>vars[key]??"")}
