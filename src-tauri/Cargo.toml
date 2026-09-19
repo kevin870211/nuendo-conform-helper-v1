@@ -1,6 +1,6 @@
 [package]
 name="nuendo-conform-helper"
-version="0.1.0"
+version="0.1.1"
 description="Cross-platform helper for Nuendo conform workflows"
 authors= ["Astra Studio"]
 edition="2021"

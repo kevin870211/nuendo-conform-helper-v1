@@ -1,5 +1,8 @@
 use std::process::Command;
 
+#[cfg(target_os = "macos")]
+use std::{ffi::c_void, thread, time::Duration};
+
 fn split_shortcut(shortcut: &str) -> (Vec<String>, String) {
     let mut parts: Vec<String> = shortcut
         .split('+')
@@ -10,131 +13,224 @@ fn split_shortcut(shortcut: &str) -> (Vec<String>, String) {
     (parts, key)
 }
 
-fn escape_applescript(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
+#[cfg(target_os = "macos")]
+#[link(name = "ApplicationServices", kind = "framework")]
+extern "C" {
+    fn AXIsProcessTrusted() -> u8;
 }
 
 #[cfg(target_os = "macos")]
-fn run_osascript(script: &str) -> Result<String, String> {
-    let output = Command::new("/usr/bin/osascript")
-        .arg("-e")
-        .arg(script)
-        .output()
-        .map_err(|error| format!("無法啟動 macOS AppleScript：{error}"))?;
-
-    if output.status.success() {
-        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if stderr.contains("-1743") || stderr.to_lowercase().contains("not allowed") {
-        return Err("macOS 沒有允許輔助使用。請到「系統設定 → 隱私權與安全性 → 輔助使用」，允許 Nuendo Conform Helper 後重新執行。".into());
-    }
-    Err(if stderr.is_empty() {
-        "macOS 無法執行快捷鍵。請確認 Nuendo 已開啟。".into()
-    } else {
-        stderr
-    })
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGEventCreateKeyboardEvent(
+        source: *mut c_void,
+        virtual_key: u16,
+        key_down: bool,
+    ) -> *mut c_void;
+    fn CGEventSetFlags(event: *mut c_void, flags: u64);
+    fn CGEventPost(tap: u32, event: *mut c_void);
 }
 
 #[cfg(target_os = "macos")]
-fn mac_target_script(target_app: &str, action: &str) -> String {
-    let requested = target_app.trim().trim_end_matches(".app");
-    let requested = if requested.is_empty() {
-        "Nuendo"
-    } else {
-        requested
-    };
-    let requested = escape_applescript(requested);
-
-    // Use System Events process objects so the Accessibility permission boundary is explicit.
-    format!(
-        r#"tell application "System Events"
-set requestedName to "REQUESTED"
-set candidates to every process whose name is requestedName or name is requestedName & ".app" or name contains "Nuendo"
-if (count of candidates) is 0 then error "找不到 Nuendo。請先開啟 Nuendo，或在設定中修改 macOS Nuendo App 名稱。" number 1001
-set targetProcess to item 1 of candidates
-set frontmost of targetProcess to true
-delay 0.2
-ACTION
-return name of targetProcess
-end tell"#,
-    )
-    .replace("REQUESTED", &requested)
-    .replace("ACTION", action)
+#[link(name = "CoreFoundation", kind = "framework")]
+extern "C" {
+    fn CFRelease(value: *const c_void);
 }
 
 #[cfg(target_os = "macos")]
-fn mac_key_statement(shortcut: &str) -> Result<String, String> {
-    let (modifiers, key) = split_shortcut(shortcut);
-    if key.is_empty() {
-        return Err("快捷鍵缺少主要按鍵。請按「錄製」重新設定。".into());
-    }
+const MAC_FLAG_SHIFT: u64 = 0x0002_0000;
+#[cfg(target_os = "macos")]
+const MAC_FLAG_CONTROL: u64 = 0x0004_0000;
+#[cfg(target_os = "macos")]
+const MAC_FLAG_OPTION: u64 = 0x0008_0000;
+#[cfg(target_os = "macos")]
+const MAC_FLAG_COMMAND: u64 = 0x0010_0000;
 
-    let mut apple_modifiers: Vec<&str> = Vec::new();
-    for modifier in modifiers {
-        match modifier.as_str() {
-            "cmd" | "command" | "meta" => apple_modifiers.push("command down"),
-            "ctrl" | "control" => apple_modifiers.push("control down"),
-            "alt" | "option" => apple_modifiers.push("option down"),
-            "shift" => apple_modifiers.push("shift down"),
-            other => return Err(format!("macOS 不支援修飾鍵：{other}。請重新錄製。")),
-        }
-    }
+#[cfg(target_os = "macos")]
+fn mac_accessibility_allowed() -> bool {
+    unsafe { AXIsProcessTrusted() != 0 }
+}
 
-    let using = if apple_modifiers.is_empty() {
-        String::new()
+#[cfg(target_os = "macos")]
+fn mac_app_name(target_app: &str) -> String {
+    let name = target_app.trim().trim_end_matches(".app").trim();
+    if name.is_empty() {
+        "Nuendo 15".into()
     } else {
-        format!(" using {{{}}}", apple_modifiers.join(", "))
-    };
+        name.into()
+    }
+}
 
-    let statement = match key.as_str() {
-        "enter" | "return" => format!("key code 36{using}"),
-        "esc" | "escape" => format!("key code 53{using}"),
-        "backspace" | "delete" => format!("key code 51{using}"),
-        "space" => format!("key code 49{using}"),
-        "tab" => format!("key code 48{using}"),
-        "left" => format!("key code 123{using}"),
-        "right" => format!("key code 124{using}"),
-        "down" => format!("key code 125{using}"),
-        "up" => format!("key code 126{using}"),
-        "home" => format!("key code 115{using}"),
-        "end" => format!("key code 119{using}"),
-        "pageup" => format!("key code 116{using}"),
-        "pagedown" => format!("key code 121{using}"),
-        "f1" => format!("key code 122{using}"),
-        "f2" => format!("key code 120{using}"),
-        "f3" => format!("key code 99{using}"),
-        "f4" => format!("key code 118{using}"),
-        "f5" => format!("key code 96{using}"),
-        "f6" => format!("key code 97{using}"),
-        "f7" => format!("key code 98{using}"),
-        "f8" => format!("key code 100{using}"),
-        "f9" => format!("key code 101{using}"),
-        "f10" => format!("key code 109{using}"),
-        "f11" => format!("key code 103{using}"),
-        "f12" => format!("key code 111{using}"),
-        key if key.starts_with('f') && key[1..].parse::<u8>().is_ok() => {
-            format!("keystroke \"{}\"{}", escape_applescript(&key), using)
-        }
-        key if key.chars().count() == 1 => {
-            format!("keystroke \"{}\"{}", escape_applescript(key), using)
-        }
-        _ => return Err(format!("macOS 尚未支援按鍵：{key}。請重新錄製。")),
-    };
-
-    Ok(statement)
+#[cfg(target_os = "macos")]
+fn mac_is_running(target_app: &str) -> bool {
+    let exact = Command::new("/usr/bin/pgrep")
+        .args(["-x", target_app])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if exact {
+        return true;
+    }
+    Command::new("/usr/bin/pgrep")
+        .args(["-f", "/Nuendo [0-9]+\\.app/Contents/MacOS/Nuendo"])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 #[cfg(target_os = "macos")]
 fn mac_focus(target_app: &str) -> Result<String, String> {
-    run_osascript(&mac_target_script(target_app, ""))
+    let app_name = mac_app_name(target_app);
+    if !mac_is_running(&app_name) {
+        return Err(format!(
+            "找不到 {app_name}。請先開啟 Nuendo，或在設定中修改 macOS Nuendo App 名稱。"
+        ));
+    }
+    if !mac_accessibility_allowed() {
+        return Err("Nuendo Conform Helper 尚未取得 macOS 輔助使用權限。請按「開啟輔助使用設定」，允許本 App 後完全結束並重新開啟。".into());
+    }
+    let status = Command::new("/usr/bin/open")
+        .args(["-a", &app_name])
+        .status()
+        .map_err(|error| format!("無法切換到 {app_name}：{error}"))?;
+    if !status.success() {
+        return Err(format!("無法切換到 {app_name}。請確認 App 名稱設定正確。"));
+    }
+    Ok(app_name)
+}
+
+#[cfg(target_os = "macos")]
+fn mac_key_code(key: &str) -> Option<u16> {
+    Some(match key {
+        "a" => 0,
+        "s" => 1,
+        "d" => 2,
+        "f" => 3,
+        "h" => 4,
+        "g" => 5,
+        "z" => 6,
+        "x" => 7,
+        "c" => 8,
+        "v" => 9,
+        "b" => 11,
+        "q" => 12,
+        "w" => 13,
+        "e" => 14,
+        "r" => 15,
+        "y" => 16,
+        "t" => 17,
+        "1" => 18,
+        "2" => 19,
+        "3" => 20,
+        "4" => 21,
+        "6" => 22,
+        "5" => 23,
+        "=" => 24,
+        "9" => 25,
+        "7" => 26,
+        "-" => 27,
+        "8" => 28,
+        "0" => 29,
+        "]" => 30,
+        "o" => 31,
+        "u" => 32,
+        "[" => 33,
+        "i" => 34,
+        "p" => 35,
+        "enter" | "return" => 36,
+        "l" => 37,
+        "j" => 38,
+        "'" => 39,
+        "k" => 40,
+        ";" => 41,
+        "\\" => 42,
+        "," => 43,
+        "/" => 44,
+        "n" => 45,
+        "m" => 46,
+        "." => 47,
+        "tab" => 48,
+        "space" => 49,
+        "`" => 50,
+        "backspace" => 51,
+        "esc" | "escape" => 53,
+        "f5" => 96,
+        "f6" => 97,
+        "f7" => 98,
+        "f3" => 99,
+        "f8" => 100,
+        "f9" => 101,
+        "f11" => 103,
+        "f10" => 109,
+        "f12" => 111,
+        "home" => 115,
+        "pageup" => 116,
+        "delete" => 117,
+        "f4" => 118,
+        "end" => 119,
+        "f2" => 120,
+        "pagedown" => 121,
+        "f1" => 122,
+        "left" => 123,
+        "right" => 124,
+        "down" => 125,
+        "up" => 126,
+        _ => return None,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn mac_shortcut(shortcut: &str) -> Result<(u16, u64), String> {
+    let (modifiers, key) = split_shortcut(shortcut);
+    if key.is_empty() {
+        return Err("快捷鍵缺少主要按鍵。請按「錄製」重新設定。".into());
+    }
+    let mut flags = 0_u64;
+    for modifier in modifiers {
+        match modifier.as_str() {
+            "cmd" | "command" | "meta" => flags |= MAC_FLAG_COMMAND,
+            "ctrl" | "control" => flags |= MAC_FLAG_CONTROL,
+            "alt" | "option" => flags |= MAC_FLAG_OPTION,
+            "shift" => flags |= MAC_FLAG_SHIFT,
+            other => return Err(format!("macOS 不支援修飾鍵：{other}。請重新錄製。")),
+        }
+    }
+    let key_code =
+        mac_key_code(&key).ok_or_else(|| format!("macOS 尚未支援按鍵：{key}。請重新錄製。"))?;
+    Ok((key_code, flags))
+}
+
+#[cfg(target_os = "macos")]
+fn mac_post_key(key_code: u16, flags: u64) -> Result<(), String> {
+    unsafe {
+        let key_down = CGEventCreateKeyboardEvent(std::ptr::null_mut(), key_code, true);
+        let key_up = CGEventCreateKeyboardEvent(std::ptr::null_mut(), key_code, false);
+        if key_down.is_null() || key_up.is_null() {
+            if !key_down.is_null() {
+                CFRelease(key_down);
+            }
+            if !key_up.is_null() {
+                CFRelease(key_up);
+            }
+            return Err("macOS 無法建立鍵盤事件。".into());
+        }
+        CGEventSetFlags(key_down, flags);
+        CGEventSetFlags(key_up, flags);
+        CGEventPost(0, key_down);
+        thread::sleep(Duration::from_millis(35));
+        CGEventPost(0, key_up);
+        CFRelease(key_down);
+        CFRelease(key_up);
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
 fn mac_send(shortcut: &str, target_app: &str) -> Result<(), String> {
-    let action = mac_key_statement(shortcut)?;
-    run_osascript(&mac_target_script(target_app, &action)).map(|_| ())
+    let (key_code, flags) = mac_shortcut(shortcut)?;
+    mac_focus(target_app)?;
+    thread::sleep(Duration::from_millis(450));
+    mac_post_key(key_code, flags)
 }
 
 #[cfg(target_os = "windows")]
@@ -148,7 +244,6 @@ fn windows_send_key(shortcut: &str) -> Result<String, String> {
     if key.is_empty() {
         return Err("快捷鍵缺少主要按鍵。請按「錄製」重新設定。".into());
     }
-
     let mut prefix = String::new();
     for modifier in modifiers {
         match modifier.as_str() {
@@ -163,7 +258,6 @@ fn windows_send_key(shortcut: &str) -> Result<String, String> {
             other => return Err(format!("Windows 不支援修飾鍵：{other}。請重新錄製。")),
         }
     }
-
     let send_key = match key.as_str() {
         "enter" | "return" => "{ENTER}".into(),
         "esc" | "escape" => "{ESC}".into(),
@@ -196,7 +290,6 @@ fn windows_send_key(shortcut: &str) -> Result<String, String> {
         key if key.chars().count() == 1 => key.into(),
         _ => return Err(format!("Windows 尚未支援按鍵：{key}。請重新錄製。")),
     };
-
     Ok(format!("{prefix}{send_key}"))
 }
 
@@ -212,12 +305,11 @@ fn windows_script(target_process: &str, send_keys: Option<&str>) -> String {
     let send_block = send_keys
         .map(|keys| {
             format!(
-                "Start-Sleep -Milliseconds 200\n[System.Windows.Forms.SendKeys]::SendWait({})",
+                "Start-Sleep -Milliseconds 350\n[System.Windows.Forms.SendKeys]::SendWait({})",
                 powershell_quote(keys)
             )
         })
         .unwrap_or_default();
-
     format!(
         r#"Add-Type -AssemblyName System.Windows.Forms
 Add-Type @"
@@ -262,11 +354,9 @@ fn run_powershell(script: &str) -> Result<String, String> {
         ])
         .output()
         .map_err(|error| format!("無法啟動 Windows PowerShell：{error}"))?;
-
     if output.status.success() {
         return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
     }
-
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     Err(if stderr.is_empty() {
         "Windows 無法執行快捷鍵。請確認 Nuendo 已開啟。".into()
@@ -287,7 +377,8 @@ fn win_send(shortcut: &str, target_process: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn check_nuendo(target_app_mac: String, _target_process_windows: String) -> Result<String, String> {
+#[allow(unused_variables)]
+fn check_nuendo(target_app_mac: String, target_process_windows: String) -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
         return mac_focus(&target_app_mac);
@@ -301,10 +392,11 @@ fn check_nuendo(target_app_mac: String, _target_process_windows: String) -> Resu
 }
 
 #[tauri::command]
+#[allow(unused_variables)]
 fn send_shortcut(
     shortcut: String,
     target_app_mac: String,
-    _target_process_windows: String,
+    target_process_windows: String,
 ) -> Result<(), String> {
     if shortcut.trim().is_empty() {
         return Err("快捷鍵尚未設定。請按「錄製」設定後再執行。".into());
@@ -321,6 +413,52 @@ fn send_shortcut(
     Err("目前只支援 macOS / Windows".into())
 }
 
+#[tauri::command]
+fn set_always_on_top(window: tauri::WebviewWindow, enabled: bool) -> Result<(), String> {
+    window
+        .set_always_on_top(enabled)
+        .map_err(|error| format!("無法設定永遠置頂：{error}"))
+}
+
+#[tauri::command]
+fn open_accessibility_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("/usr/bin/open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+            .status()
+            .map_err(|error| format!("無法開啟輔助使用設定：{error}"))?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err("無法開啟輔助使用設定。".into());
+    }
+    #[allow(unreachable_code)]
+    Err("此功能只適用於 macOS。".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_shortcut;
+
+    #[test]
+    fn splits_recorded_shortcut() {
+        let (modifiers, key) = split_shortcut("cmd+shift+z");
+        assert_eq!(modifiers, vec!["cmd", "shift"]);
+        assert_eq!(key, "z");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn maps_macos_shortcuts_to_native_codes() {
+        let (key, flags) = super::mac_shortcut("cmd+shift+z").unwrap();
+        assert_eq!(key, 6);
+        assert_eq!(flags, super::MAC_FLAG_COMMAND | super::MAC_FLAG_SHIFT);
+        assert_eq!(super::mac_shortcut("f1").unwrap().0, 122);
+        assert!(super::mac_shortcut("cmd+unsupported").is_err());
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -328,7 +466,12 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![check_nuendo, send_shortcut])
+        .invoke_handler(tauri::generate_handler![
+            check_nuendo,
+            send_shortcut,
+            set_always_on_top,
+            open_accessibility_settings
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Nuendo Conform Helper");
 }

@@ -1,7 +1,7 @@
 import type { ConformItem, ItemType } from "./types";
 const TC=String.raw`\d{2}[:;]\d{2}[:;]\d{2}[:;]\d{2}`;
 const RANGE_RE=new RegExp(`(${TC})\\s*[~～]\\s*(${TC})`);
-const SOURCE_RE=new RegExp(`(\\d{4})\\s*版\\s*(R\\d+)\\s*(${TC})\\s*[~～]\\s*(${TC})`);
+const SOURCE_RE=new RegExp(`(?:是\\s*)?(\\d{4})\\s*(?:版\\s*)?(R\\d+)\\s*(${TC})\\s*[~～]\\s*(${TC})`,`i`);
 const normalizeTc=(tc:string)=>tc.replaceAll(";",":");
 function classify(text:string,hasSource:boolean,hasRange:boolean):ItemType{if(/新增鏡頭/.test(text))return"new_shot";if(/OS/i.test(text))return/置換|改到|提前|改詞|拿掉/.test(text)?"replace":"os";if(/音效|鈴聲|廣播/.test(text))return"sound";if(/slow/i.test(text))return"slow";if(/重覆使用|重複使用/.test(text))return"reuse";if(/定格/.test(text))return"freeze";if(/置換|重配|改詞/.test(text))return"replace";if(hasSource&&hasRange)return"move";return"note"}
 function tagsFor(text:string){const tags:string[]=[];const pairs:[RegExp,string][]=[[/slow/i,"SLOW"],[/重覆使用|重複使用/,"REUSE"],[/新增鏡頭/,"NEW SHOT"],[/OS/i,"OS"],[/音效|鈴聲|廣播/,"SFX"],[/置換|重配/,"REPLACE"],[/定格/,"FREEZE"],[/放大/,"ZOOM"]];for(const [re,tag] of pairs)if(re.test(text))tags.push(tag);return tags}

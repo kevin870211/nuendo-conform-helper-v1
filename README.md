@@ -13,8 +13,10 @@
 - 工作清單、搜尋、完成進度與自動保存
 - Alt/Option+1、+2、+3 全域 Quick Copy
 - Nuendo 快捷鍵面板
-- macOS：AppleScript 切回 Nuendo 並送快捷鍵
+- macOS：切回 Nuendo，透過 CoreGraphics 原生鍵盤事件送出快捷鍵
 - Windows：PowerShell / SendKeys 切回 Nuendo 並送快捷鍵
+- macOS / Windows 分開保存快捷鍵，支援直接錄製組合鍵
+- 永遠置頂開關（由 Tauri 原生視窗層控制）
 
 Parser 針對目前調整文件格式，例如：
 
@@ -43,11 +45,20 @@ npm run tauri build
 
 ## macOS
 
-第一次使用快捷鍵控制，需要到「系統設定 → 隱私權與安全性 → 輔助使用」允許本工具控制鍵盤。預設 App 名稱是 `Nuendo 14`，可在設定修改。
+1. 先將 `Nuendo Conform Helper.app` 放入「應用程式」，不要長期從 DMG 內執行。
+2. 到「系統設定 → 隱私權與安全性 → 輔助使用」，允許 `Nuendo Conform Helper`。
+3. 完全結束並重新開啟 Helper，再到「設定」按「測試連接」。
+4. 顯示「快捷鍵權限正常」後，再測試 Copy / Paste 等操作。
+
+預設 App 名稱是 `Nuendo 15`，可在設定修改。macOS 版不再透過 `osascript` 送鍵，系統權限會直接授予 Helper 本身。
+
+若「永遠置頂」或快捷鍵仍無反應，先確認目前執行路徑不是 `/Volumes/...` 的舊 DMG 版本，並刪除「輔助使用」清單中的舊項目後重新加入 `/Applications/Nuendo Conform Helper.app`。
 
 ## Windows
 
 預設尋找 Process 名稱開頭為 `Nuendo` 的程式，可在設定修改。
+
+Helper 與 Nuendo 必須使用相同權限層級：兩者都一般啟動，或兩者都以系統管理員身分執行。快捷鍵錄製請切到 Windows 模式後操作，Windows 使用 `Ctrl`，macOS 使用 `Command`。
 
 ### GitHub Actions Windows 建置
 

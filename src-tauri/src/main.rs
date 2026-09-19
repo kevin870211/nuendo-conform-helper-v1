@@ -1,1 +1,3 @@
-fn main(){nuendo_conform_helper_lib::run()}
+fn main() {
+    nuendo_conform_helper_lib::run()
+}
